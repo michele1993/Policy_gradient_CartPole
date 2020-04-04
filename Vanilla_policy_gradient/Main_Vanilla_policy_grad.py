@@ -1,3 +1,7 @@
+# By summing each time-step cost and then performing one update for the episode the policy still learns, but it's uch slower in
+# learning as i should be, since the gradient of a sum should be equal to the sum of the gradients, but I guess by updating the baseline
+# every time-step, you get more updated advantages when computing the policy gradient for each time-step, thus reducing the variance ?
+
 import torch
 import gym
 import torch.optim as opt
@@ -5,19 +9,20 @@ import numpy as np
 
 
 from torch.distributions import Categorical
+#from torch.distributions import Bernoulli
 
 
-from Policy_network import Policy_net
-from Baseline_net import Baseline_nn
+from Vanilla_policy_gradient.Policy_network import Policy_net
+from Vanilla_policy_gradient.Baseline_net import Baseline_nn
 
 n_episodes= 10000
 discount = 0.99
 max_t_step = 200
-learning_rate = 1e-4
+learning_rate = 1e-3
 batch_size = 1
 
 env = gym.make("CartPole-v1")
-pol_nn = Policy_net().double()
+pol_nn = Policy_net(output_size =2).double()
 base_nn = Baseline_nn().double()
 
 criterion = torch.nn.MSELoss()
@@ -32,14 +37,17 @@ episode_overall_return = []
 for i in range(n_episodes):
 
     current_st = env.reset()
-    episode_rwd = np.empty(0)
-    episode_v_value = []
-    episode_lp_action = []
-    episode_states = []
+    episode_rwd = torch.empty(0)
+    episode_lp_action = torch.empty(0).float() #[]
+    episode_states = np.empty(0)
 
     t = 0
 
+
+
     for t in range(max_t_step): #max_t_step
+
+        episode_states= np.concatenate((episode_states,current_st),axis=0)
 
         mean_action = pol_nn(torch.tensor(current_st))
 
@@ -47,23 +55,13 @@ for i in range(n_episodes):
 
         action = d.sample()
 
-        episode_lp_action.append(d.log_prob(action))
+        episode_lp_action = torch.cat([episode_lp_action,torch.unsqueeze(d.log_prob(action).float(),dim=-1)])
 
-
-        next_st,rwd, done, _ = env.step(action.numpy())
-
-        predicted_value = base_nn(torch.tensor(current_st))
+        next_st, rwd, done, _ = env.step(int(action.numpy()))
 
         episode_rwd = episode_rwd * discount
 
-        episode_rwd = np.concatenate((episode_rwd,np.array([rwd])))
-
-
-
-        episode_v_value.append(predicted_value)
-
-        episode_states.append(current_st)
-
+        episode_rwd = torch.cat((episode_rwd,torch.tensor([rwd])),dim=-1)
 
 
         if done:
@@ -73,53 +71,36 @@ for i in range(n_episodes):
 
 
 
-    n_steps = 0
-
-    policy_c = 0
-
-    baseline_c = 0
+    predicted_value = base_nn(torch.tensor(episode_states.reshape(-1,4)))
 
 
+    #episode_rwd = np.flip(np.cumsum(np.flip(episode_rwd)))
 
-    graph = True
-
-    episode_rwd = np.flip(np.cumsum(np.flip(episode_rwd)))
-
+    episode_rwd = torch.flip(torch.cumsum(torch.flip(episode_rwd, (0,)), 0), (0,))
 
 
-
-    # perform update for each time step
-    for e in range(t+1): # t episode_action_taken
+    advantage = episode_rwd.view(-1) - predicted_value.view(-1) # v_value
 
 
-        advantage = episode_rwd[e] - episode_v_value[e] # v_value
+    # Update policy net
 
+    policy_c = sum(pol_nn.REINFORCE(episode_lp_action,advantage))
 
-        # Update policy net
+    baseline_c = sum(torch.pow(advantage, 2))
 
-        policy_c += pol_nn.REINFORCE(episode_lp_action[e],advantage)
+    loss =  policy_c + baseline_c  #pol_nn.REINFORCE(episode_lp_action[e],advantage) + torch.pow(episode_rwd[e] - episode_v_value[e], 2)
 
+    optimiser.zero_grad()
 
-        baseline_c += torch.pow(episode_rwd[e] - episode_v_value[e], 2)
+    loss.backward()
 
-        n_steps += 1
+    optimiser.step()
 
-        loss = pol_nn.REINFORCE(episode_lp_action[e],advantage) + torch.pow(episode_rwd[e] - episode_v_value[e], 2)
-
-        optimiser.zero_grad()
-
-        if e == t:
-            graph = False
-
-        loss.backward(retain_graph = graph)
-
-        optimiser.step()
-
-    episode_overall_return.append(n_steps)
+    episode_overall_return.append(t)
 
 
     if i % 100 == 0:
 
-        print("Baseline loss {}, Policy cost {}, Return {}, Episode {}".format(baseline_c[0]/n_steps,policy_c[0]/n_steps,sum(episode_overall_return)/100, i))
+        print("Baseline loss {}, Policy cost {}, Return {}, Episode {}".format(baseline_c.data/t,policy_c.data/t,sum(episode_overall_return)/100, i))
 
         episode_overall_return = []
