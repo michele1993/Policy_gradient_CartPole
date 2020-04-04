@@ -1,20 +1,23 @@
 import torch.nn as nn
 import torch
+import torch.nn.functional as F
+
 class Critic_NN(nn.Module):
 
-    def __init__(self,discount, n_inputs = 4, n_outputs=1):
+    def __init__(self,discount, n_inputs = 4,n_hiddens = 20, n_outputs=1):
 
         super().__init__()
         self.discount= discount
 
-
-        self.l1 = nn.Linear(n_inputs,n_outputs)
+        self.l1 = nn.Linear(n_inputs,n_hiddens)
+        self.l2 = nn.Linear(n_hiddens, n_outputs)
 
         self.I = 1
 
     def forward(self, x):
 
-        x = self.l1(x)
+        x = F.relu(self.l1(x))
+        x= self.l2(x)
 
         return x
 
@@ -29,16 +32,16 @@ class Critic_NN(nn.Module):
             vs_2 = self(torch.tensor(t2)).detach()
 
 
-        td_error = (rwd + self.discount * vs_2  - vs_1).detach()
+        td_error = (rwd + self.discount * vs_2  - vs_1)
 
-        loss =  self.I * td_error * vs_1
+        #loss =   td_error * vs_1 # * self.I
 
-        if done:
-            self.I = 1
-        else:
-            self.I *= self.discount
+        # if done:
+        #     self.I = 1
+        # else:
+        #     self.I *= self.discount
 
-        return vs_1, loss
+        return td_error
 
 
 
